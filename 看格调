@@ -1,0 +1,757 @@
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+-- Roblox 服务
+local runService = game:GetService("RunService")
+local playersService = game:GetService("Players")
+local lightingService = game:GetService("Lighting")
+local replicatedStorage = game:GetService("ReplicatedStorage")
+local virtualInputManager = game:GetService("VirtualInputManager")
+local tweenService = game:GetService("TweenService")
+local httpservice = game:GetService("HttpService")
+
+-- 本地玩家
+local localPlayer = playersService.LocalPlayer
+local playerGui = localPlayer:WaitForChild("PlayerGui")
+
+-- 游戏内容
+local workspace = game.workspace
+local map = workspace:FindFirstChild("Map")
+local rooms = map and map:FindFirstChild("Rooms")
+local ghost = workspace:FindFirstChild("Ghost")
+local items = workspace:FindFirstChild("Items")
+local fuseBox = map and map:FindFirstChild("FuseBox")
+
+-- 状态变量
+local noClipEnabled = false
+local noClipConnection = nil
+local fullbrightProperties = {}
+local autoPhotoActive = false
+local autoMarkActive = false
+
+-- ESP 表
+local espObjects = {}
+local ghostEspTable = {}
+local cursedObjectEspTable = {}
+local generatorEspTable = {}
+local playersEspTable = {}
+local roomEspTable = {}
+
+-- 鬼魂数据
+local ghostData = {
+    Spirit = {"Handprints", "GhostWriting", "SpiritBox"},
+    Wraith = {"EMFLevel5", "SpiritBox", "LaserProjector"},
+    Ghoul = {"SpiritBox", "FreezingTemperatures", "GhostOrb"},
+    Phantom = {"EMFLevel5", "Handprints", "GhostOrb"},
+    Shadow = {"EMFLevel5", "GhostWriting", "LaserProjector"},
+    Demon = {"EMFLevel5", "Handprints", "FreezingTemperatures"},
+    Specter = {"EMFLevel5", "FreezingTemperatures", "LaserProjector"},
+    Entity = {"SpiritBox", "Handprints", "LaserProjector"},
+    Skinwalker = {"FreezingTemperatures", "GhostWriting", "SpiritBox"},
+    Banshee = {"GhostOrb", "Handprints", "FreezingTemperatures"},
+    Wendigo = {"GhostOrb", "GhostWriting", "LaserProjector"},
+    Nightmare = {"EMFLevel5", "SpiritBox", "GhostOrb"},
+    Leviathan = {"GhostOrb", "GhostWriting", "Handprints"},
+    Oni = {"LaserProjector", "SpiritBox", "FreezingTemperatures"},
+    Umbra = {"GhostOrb", "LaserProjector", "Handprints"},
+    Revenant = {"GhostWriting", "EMFLevel5", "FreezingTemperatures"}
+}
+
+-- 实用函数
+local function findRoomAtPosition(position)
+    if not rooms then return "未知" end
+    for _, room in ipairs(rooms:GetChildren()) do
+        if room:IsA("Model") and room:FindFirstChild("RoomTrigger") then
+            local trigger = room.RoomTrigger
+            if trigger:IsA("Part") then
+                local region = Region3.new(
+                    trigger.Position - trigger.Size/2,
+                    trigger.Position + trigger.Size/2
+                )
+                if position and region:PointInside(position) then
+                    return room.Name
+                end
+            end
+        end
+    end
+    return "未知"
+end
+
+local function getColdestRoom()
+    if not rooms then return "未知", 0 end
+    local coldestRoom = "未知"
+    local lowestTemp = 100
+    for _, room in ipairs(rooms:GetChildren()) do
+        if room:IsA("Model") and room:FindFirstChild("Temperature") then
+            local temp = room.Temperature.Value
+            if temp < lowestTemp then
+                lowestTemp = temp
+                coldestRoom = room.Name
+            end
+        end
+    end
+    return coldestRoom, lowestTemp
+end
+
+local function getCursedObject()
+    if not items then return nil end
+    for _, item in ipairs(items:GetChildren()) do
+        if item:GetAttribute("IsCursed") then
+            return item
+        end
+    end
+    return nil
+end
+
+-- ESP 函数
+local function createEsp(object, name, color, espTable)
+    if not object or not object.Parent or not espTable then return end
+    
+    -- 检查该对象是否已存在ESP
+    for _, esp in ipairs(espTable) do
+        if esp.Object == object then
+            return
+        end
+    end
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Adornee = object
+    highlight.FillTransparency = 0.8
+    highlight.OutlineColor = color or Color3.fromRGB(255, 0, 0)
+    highlight.OutlineTransparency = 0
+    highlight.FillColor = color or Color3.fromRGB(255, 0, 0)
+    highlight.Parent = object
+    
+    local billboard = Instance.new("BillboardGui")
+    billboard.Adornee = object
+    billboard.Size = UDim2.new(0, 100, 0, 40)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.AlwaysOnTop = true
+    billboard.Parent = object
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = name or "物体"
+    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textLabel.TextScaled = true
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.Parent = billboard
+    
+    local espEntry = {
+        Object = object,
+        Highlight = highlight,
+        Billboard = billboard,
+        Hue = math.random(0, 360)
+    }
+    
+    table.insert(espTable, espEntry)
+    table.insert(espObjects, espEntry)
+    
+    return espEntry
+end
+
+local function clearEsp(espTable)
+    for _, v in ipairs(espTable) do
+        if v.Highlight and v.Highlight.Parent then
+            v.Highlight:Destroy()
+        end
+        if v.Billboard and v.Billboard.Parent then
+            v.Billboard:Destroy()
+        end
+    end
+    table.clear(espTable)
+end
+
+local function updateAllESP()
+    -- 鬼魂ESP
+    if Rayfield.Flags["鬼魂ESP"].CurrentValue and ghost then
+        createEsp(ghost, "鬼魂", Color3.fromRGB(255, 0, 0), ghostEspTable)
+    else
+        clearEsp(ghostEspTable)
+    end
+    
+    -- 诅咒物品ESP
+    if Rayfield.Flags["诅咒物品ESP"].CurrentValue then
+        local cursedObj = getCursedObject()
+        if cursedObj then
+            createEsp(cursedObj, "诅咒物品", Color3.fromRGB(255, 0, 255), cursedObjectEspTable)
+        end
+    else
+        clearEsp(cursedObjectEspTable)
+    end
+    
+    -- 发电机ESP
+    if Rayfield.Flags["发电机ESP"].CurrentValue and items then
+        for _, item in ipairs(items:GetChildren()) do
+            if item.Name == "Generator" then
+                createEsp(item, "发电机", Color3.fromRGB(0, 255, 0), generatorEspTable)
+            end
+        end
+    else
+        clearEsp(generatorEspTable)
+    end
+    
+    -- 玩家ESP
+    if Rayfield.Flags["玩家ESP"].CurrentValue then
+        for _, player in ipairs(playersService:GetPlayers()) do
+            if player ~= localPlayer and player.Character then
+                createEsp(player.Character, player.Name, Color3.fromRGB(0, 0, 255), playersEspTable)
+            end
+        end
+    else
+        clearEsp(playersEspTable)
+    end
+end
+
+-- 创建窗口
+local mainWindow = Rayfield:CreateWindow({
+    Name = "NH HUB - 恶魔学",
+    LoadingTitle = "请稍候...",
+    LoadingSubtitle = "作者 YUki",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "NH HUB配置", 
+        FileName = "恶魔学"
+    },
+    Discord = {
+        Enabled = true,
+        Invite = "NH HUB",
+        RememberJoins = true
+    },
+    KeySystem = false
+})
+
+-- 主要标签页
+local playerTab = mainWindow:CreateTab("￼玩家")
+local espTab = mainWindow:CreateTab("￼透视")
+local infoTab = mainWindow:CreateTab("￼信息")
+local autoTab = mainWindow:CreateTab("￼自动")
+local miscTab = mainWindow:CreateTab("￼杂项")
+local settingsTab = mainWindow:CreateTab("￼设置")
+
+-- 玩家标签页内容
+local movementVisionSection = playerTab:CreateSection("移动与视野")
+
+playerTab:CreateToggle({
+    Name = " 全局照明",
+    CurrentValue = false,
+    Flag = "全局照明",
+    Callback = function(value)
+        if value then
+            fullbrightProperties.Brightness = lightingService.Brightness
+            fullbrightProperties.ClockTime = lightingService.ClockTime
+            fullbrightProperties.FogEnd = lightingService.FogEnd
+            fullbrightProperties.GlobalShadows = lightingService.GlobalShadows
+            fullbrightProperties.Ambient = lightingService.Ambient
+            fullbrightProperties.OutdoorAmbient = lightingService.OutdoorAmbient
+            
+            lightingService.Brightness = 2
+            lightingService.ClockTime = 14
+            lightingService.FogEnd = 1000000
+            lightingService.GlobalShadows = false
+            lightingService.Ambient = Color3.fromRGB(128, 128, 128)
+            lightingService.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+        else
+            if fullbrightProperties.Brightness then
+                lightingService.Brightness = fullbrightProperties.Brightness
+            end
+            if fullbrightProperties.ClockTime then
+                lightingService.ClockTime = fullbrightProperties.ClockTime
+            end
+            if fullbrightProperties.FogEnd then
+                lightingService.FogEnd = fullbrightProperties.FogEnd
+            end
+            if fullbrightProperties.GlobalShadows then
+                lightingService.GlobalShadows = fullbrightProperties.GlobalShadows
+            end
+            if fullbrightProperties.Ambient then
+                lightingService.Ambient = fullbrightProperties.Ambient
+            end
+            if fullbrightProperties.OutdoorAmbient then
+                lightingService.OutdoorAmbient = fullbrightProperties.OutdoorAmbient
+            end
+        end
+    end,
+})
+
+playerTab:CreateToggle({
+    Name = "￼ 穿墙模式",
+    CurrentValue = false,
+    Flag = "穿墙模式",
+    Callback = function(value)
+        noClipEnabled = value
+        if noClipEnabled then
+            if noClipConnection then
+                noClipConnection:Disconnect()
+            end
+            noClipConnection = runService.Stepped:Connect(function()
+                if noClipEnabled and localPlayer.Character then
+                    local humanoid = localPlayer.Character:FindFirstChildOfClass("Humanoid")
+                    if humanoid then
+                        humanoid:ChangeState(11) -- 自由落体状态防止攀爬
+                        for _, part in ipairs(localPlayer.Character:GetDescendants()) do
+                            if part:IsA("BasePart") and part.CanCollide then
+                                part.CanCollide = false
+                            end
+                        end
+                    end
+                end
+            end)
+        elseif noClipConnection then
+            noClipConnection:Disconnect()
+            noClipConnection = nil
+        end
+    end,
+})
+
+playerTab:CreateSlider({
+    Name = "￼ 行走速度",
+    Range = {2, 50},
+    Increment = 1,
+    Suffix = "速度",
+    CurrentValue = 16,
+    Flag = "行走速度",
+    Callback = function(value)
+        if localPlayer.Character then
+            local humanoid = localPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                humanoid.WalkSpeed = value
+            end
+        end
+    end,
+})
+
+playerTab:CreateSlider({
+    Name = "￼ 跳跃高度",
+    Range = {2, 100},
+    Increment = 1,
+    Suffix = "高度",
+    CurrentValue = 50,
+    Flag = "跳跃高度",
+    Callback = function(value)
+        if localPlayer.Character then
+            local humanoid = localPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                humanoid.JumpPower = value
+            end
+        end
+    end,
+})
+
+playerTab:CreateSlider({
+    Name = "￼ 视野范围",
+    Range = {70, 120},
+    Increment = 1,
+    Suffix = "视野",
+    CurrentValue = 70,
+    Flag = "视野范围",
+    Callback = function(value)
+        if workspace.CurrentCamera then
+            workspace.CurrentCamera.FieldOfView = value
+        end
+    end,
+})
+
+-- ESP 标签页内容
+local visibilityTogglesSection = espTab:CreateSection("可见性开关")
+
+espTab:CreateToggle({
+    Name = "￼ 鬼魂可见（即使不猎杀时）",
+    CurrentValue = false,
+    Flag = "鬼魂可见",
+    Callback = function(value)
+        if ghost then
+            if ghost:FindFirstChild("VisibleParts") then
+                for _, part in ipairs(ghost.VisibleParts:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.Transparency = value and 0 or 1
+                    end
+                end
+            end
+            -- 同时处理主鬼魂模型
+            for _, part in ipairs(ghost:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.Transparency = value and 0 or 1
+                end
+            end
+        end
+    end,
+})
+
+espTab:CreateToggle({
+    Name = "￼ 鬼魂ESP",
+    CurrentValue = false,
+    Flag = "鬼魂ESP",
+    Callback = function(value)
+        if value and ghost then
+            createEsp(ghost, "鬼魂", Color3.fromRGB(255, 0, 0), ghostEspTable)
+        else
+            clearEsp(ghostEspTable)
+        end
+    end,
+})
+
+espTab:CreateToggle({
+    Name = "￼ 诅咒物品ESP",
+    CurrentValue = false,
+    Flag = "诅咒物品ESP",
+    Callback = function(value)
+        if value then
+            local cursedObj = getCursedObject()
+            if cursedObj then
+                createEsp(cursedObj, "诅咒物品", Color3.fromRGB(255, 0, 255), cursedObjectEspTable)
+            end
+        else
+            clearEsp(cursedObjectEspTable)
+        end
+    end,
+})
+
+espTab:CreateToggle({
+    Name = " 发电机ESP",
+    CurrentValue = false,
+    Flag = "发电机ESP",
+    Callback = function(value)
+        if value and items then
+            for _, item in ipairs(items:GetChildren()) do
+                if item.Name == "Generator" then
+                    createEsp(item, "发电机", Color3.fromRGB(0, 255, 0), generatorEspTable)
+                end
+            end
+        else
+            clearEsp(generatorEspTable)
+        end
+    end,
+})
+
+espTab:CreateToggle({
+    Name = "￼ 玩家ESP",
+    CurrentValue = false,
+    Flag = "玩家ESP",
+    Callback = function(value)
+        if value then
+            for _, player in ipairs(playersService:GetPlayers()) do
+                if player ~= localPlayer and player.Character then
+                    createEsp(player.Character, player.Name, Color3.fromRGB(0, 0, 255), playersEspTable)
+                end
+            end
+        else
+            clearEsp(playersEspTable)
+        end
+    end,
+})
+
+espTab:CreateToggle({
+    Name = "￼ 房间ESP",
+    CurrentValue = false,
+    Flag = "房间ESP",
+    Callback = function(value)
+        if value and rooms then
+            for _, room in ipairs(rooms:GetChildren()) do
+                if room:IsA("Model") and room:FindFirstChild("RoomTrigger") then
+                    local trigger = room.RoomTrigger
+                    if trigger:IsA("Part") then
+                        createEsp(trigger, room.Name, Color3.fromRGB(255, 255, 0), roomEspTable)
+                    end
+                end
+            end
+        else
+            clearEsp(roomEspTable)
+        end
+    end,
+})
+
+-- 信息标签页内容
+local envGhostDetailsSection = infoTab:CreateSection("环境 / 鬼魂详情")
+local favoriteRoomLabel = infoTab:CreateLabel("￼ 最爱房间: ???")
+local currentRoomLabel = infoTab:CreateLabel("￼ 当前房间: ???")
+local ghostTypeLabel = infoTab:CreateLabel("￼ 鬼魂类型: ???")
+local cursedObjectLabel = infoTab:CreateLabel("￼ 诅咒物品名称: ???")
+local coldestRoomLabel = infoTab:CreateLabel(" 最冷房间: ??? (??°C)")
+
+local playerStatsSection = infoTab:CreateSection("玩家状态")
+local sanityLabel = infoTab:CreateLabel("￼ 理智（体力）: ???")
+local levelLabel = infoTab:CreateLabel("￼ 等级: ???")
+local experienceLabel = infoTab:CreateLabel("￼ 经验: ???")
+local moneyLabel = infoTab:CreateLabel("￼ 金钱: ???")
+local winsLabel = infoTab:CreateLabel("￼ 胜利次数: ???")
+
+local locationDetailsSection = infoTab:CreateSection("位置详情")
+local yourCurrentRoomLabel = infoTab:CreateLabel("￼ 你所在的房间: ???")
+local cursedObjectRoomLabel = infoTab:CreateLabel("￼ 诅咒物品所在房间: ???")
+local ghostEvidenceLabel = infoTab:CreateLabel("￼ 鬼魂证据: ???")
+
+-- 自动标签页内容
+local autoFeaturesSection = autoTab:CreateSection("自动功能")
+
+autoTab:CreateToggle({
+    Name = "￼ 自动拍照",
+    CurrentValue = false,
+    Flag = "自动拍照",
+    Callback = function(value)
+        autoPhotoActive = value
+        if value then
+            spawn(function()
+                while autoPhotoActive and task.wait(1) do
+                    if ghost and localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        local humanoidRootPart = localPlayer.Character.HumanoidRootPart
+                        local originalPosition = humanoidRootPart.CFrame
+                        
+                        -- 传送到鬼魂身边
+                        humanoidRootPart.CFrame = ghost.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+                        
+                        -- 拍照
+                        virtualInputManager:SendKeyEvent(true, "F", false, game)
+                        task.wait(0.1)
+                        virtualInputManager:SendKeyEvent(false, "F", false, game)
+                        
+                        -- 返回原位
+                        humanoidRootPart.CFrame = originalPosition
+                    end
+                end
+            end)
+        end
+    end,
+})
+
+autoTab:CreateLabel("请勿使用 - 可能被检测")
+
+local autoMarkGhostSection = autoTab:CreateSection("自动标记鬼魂")
+
+autoTab:CreateToggle({
+    Name = "￼ 自动标记鬼魂",
+    CurrentValue = false,
+    Flag = "自动标记鬼魂",
+    Callback = function(value)
+        autoMarkActive = value
+        if value and ghost then
+            local ghostType = ghost:GetAttribute("GhostType") or "未知"
+            if ghostType ~= "未知" and ghostData[ghostType] then
+                local evidences = ghostData[ghostType]
+                ghostEvidenceLabel:Set("鬼魂证据: " .. table.concat(evidences, ", "))
+                
+                -- 在鬼魂上标记证据（通常需用游戏特定方法实现）
+                for _, evidence in ipairs(evidences) do
+                    -- 此处为实际证据标记逻辑的占位符
+                    print("正在标记证据:", evidence)
+                end
+            end
+        end
+    end,
+})
+
+autoTab:CreateLabel("请自行手动标记 - 谨慎使用")
+
+autoTab:CreateToggle({
+    Name = "￼ 自动发电机",
+    CurrentValue = false,
+    Flag = "自动发电机",
+    Callback = function(value)
+        if value then
+            spawn(function()
+                while Rayfield.Flags["自动发电机"].CurrentValue and task.wait(2) do
+                    if items then
+                        for _, item in ipairs(items:GetChildren()) do
+                            if item.Name == "Generator" and item:FindFirstChild("Interact") then
+                                local interact = item.Interact
+                                if interact:IsA("ProximityPrompt") then
+                                    fireproximityprompt(interact)
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+    end,
+})
+
+-- 杂项标签页内容
+local miscFeaturesSection = miscTab:CreateSection("杂项功能")
+
+miscTab:CreateButton({
+    Name = "￼ 重置角色",
+    Callback = function()
+        localPlayer.Character:BreakJoints()
+    end,
+})
+
+miscTab:CreateButton({
+    Name = "￼ 刷新所有透视",
+    Callback = function()
+        updateAllESP()
+    end,
+})
+
+miscTab:CreateButton({
+    Name = "￼ 传送到鬼魂处",
+    Callback = function()
+        if ghost and localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            localPlayer.Character.HumanoidRootPart.CFrame = ghost.HumanoidRootPart.CFrame + Vector3.new(5, 0, 5)
+        end
+    end,
+})
+
+miscTab:CreateButton({
+    Name = "￼ 传送到诅咒物品处",
+    Callback = function()
+        local cursedObj = getCursedObject()
+        if cursedObj and localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            localPlayer.Character.HumanoidRootPart.CFrame = cursedObj.CFrame + Vector3.new(2, 0, 2)
+        end
+    end,
+})
+
+local creditsSection = miscTab:CreateSection("信息")
+miscTab:CreateLabel("作者 YUkui")
+miscTab:CreateLabel("更新日志:\n- 首次发布\n-优化ESP\n- 新增房间ESP")
+-- 设置标签页内容
+local configSection = settingsTab:CreateSection("配置管理")
+
+settingsTab:CreateButton({
+    Name = "￼ 保存配置",
+    Callback = function()
+        Rayfield:SaveConfiguration()
+    end,
+})
+
+settingsTab:CreateButton({
+    Name = "￼ 加载配置",
+    Callback = function()
+        Rayfield:LoadConfiguration()
+    end,
+})
+
+settingsTab:CreateButton({
+    Name = "￼ 重置配置",
+    Callback = function()
+        Rayfield:ResetConfiguration()
+    end,
+})
+
+settingsTab:CreateLabel("界面主题设置")
+settingsTab:CreateLabel("NH HUB制作")
+
+-- 主要游戏循环
+runService.RenderStepped:Connect(function()
+    -- 彩虹色ESP更新
+    for _, espData in ipairs(espObjects) do
+        if espData.Highlight and espData.Highlight.Parent then
+            espData.Hue = (espData.Hue + 1) % 360
+            local color = Color3.fromHSV(espData.Hue / 360, 1, 1)
+            espData.Highlight.OutlineColor = color
+            espData.Highlight.FillColor = color
+        end
+    end
+    
+    -- 根据开关状态更新所有ESP
+    updateAllESP()
+end)
+
+-- 信息更新循环
+spawn(function()
+    while task.wait(0.5) do
+        -- 鬼魂与房间信息
+        if ghost and ghost.Parent then
+            favoriteRoomLabel:Set("最爱房间: " .. tostring(ghost:GetAttribute("FavoriteRoom") or "???"))
+            currentRoomLabel:Set("当前房间: " .. tostring(ghost:GetAttribute("CurrentRoom") or "???"))
+            ghostTypeLabel:Set("鬼魂类型: " .. tostring(ghost:GetAttribute("GhostType") or "未知"))
+        else
+            favoriteRoomLabel:Set("最爱房间: [无鬼魂]")
+            currentRoomLabel:Set("当前房间: [无鬼魂]")
+            ghostTypeLabel:Set("鬼魂类型: [无鬼魂]")
+        end
+
+        -- 诅咒物品信息
+        local cursedObj = getCursedObject()
+        if cursedObj then
+            cursedObjectLabel:Set("诅咒物品名称: " .. cursedObj.Name)
+            cursedObjectRoomLabel:Set("诅咒物品所在房间: " .. findRoomAtPosition(cursedObj.Position))
+        else
+            cursedObjectLabel:Set("诅咒物品名称: 未找到")
+            cursedObjectRoomLabel:Set("诅咒物品所在房间: 无")
+        end
+        
+        -- 温度信息
+        local coldestRoom, lowestTemp = getColdestRoom()
+        coldestRoomLabel:Set("最冷房间: " .. coldestRoom .. " (" .. string.format("%.1f", lowestTemp) .. "°C)")
+        
+        -- 玩家位置
+        if localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            yourCurrentRoomLabel:Set("你所在的房间: " .. findRoomAtPosition(localPlayer.Character.HumanoidRootPart.Position))
+        else
+            yourCurrentRoomLabel:Set("你所在的房间: 未知")
+        end
+        
+        -- 玩家状态
+        if localPlayer:FindFirstChild("leaderstats") then
+            local stats = localPlayer.leaderstats
+            if stats:FindFirstChild("Level") then
+                levelLabel:Set("等级: " .. tostring(stats.Level.Value))
+            end
+            if stats:FindFirstChild("Experience") then
+                experienceLabel:Set("经验: " .. tostring(stats.Experience.Value))
+            end
+            if stats:FindFirstChild("Money") then
+                moneyLabel:Set("金钱: $" .. tostring(stats.Money.Value))
+            end
+            if stats:FindFirstChild("Wins") then
+                winsLabel:Set("胜利次数: " .. tostring(stats.Wins.Value))
+            end
+        end
+        
+        -- 理智/体力
+        if localPlayer.Character then
+            local humanoid = localPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                sanityLabel:Set("理智（体力）: " .. string.format("%.1f", humanoid.Health))
+            end
+        end
+        
+        -- 自动标记鬼魂证据
+        if autoMarkActive and ghost then
+            local ghostType = ghost:GetAttribute("GhostType") or "未知"
+            if ghostType ~= "未知" and ghostData[ghostType] then
+                ghostEvidenceLabel:Set("鬼魂证据: " .. table.concat(ghostData[ghostType], ", "))
+            end
+        end
+    end
+end)
+
+-- 玩家重生后自动重连功能
+localPlayer.CharacterAdded:Connect(function(character)
+    task.wait(2) -- 等待角色完全加载
+    
+    -- 重新应用行走速度
+    if Rayfield.Flags["行走速度"] then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid.WalkSpeed = Rayfield.Flags["行走速度"].CurrentValue
+        end
+    end
+    
+    -- 重新应用跳跃高度
+    if Rayfield.Flags["跳跃高度"] then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid.JumpPower = Rayfield.Flags["跳跃高度"].CurrentValue
+        end
+    end
+end)
+
+-- 初始化设置
+if localPlayer.Character then
+    local humanoid = localPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.WalkSpeed = Rayfield.Flags["行走速度"].CurrentValue
+        humanoid.JumpPower = Rayfield.Flags["跳跃高度"].CurrentValue
+    end
+end
+
+Rayfield:Notify({
+    Title = "NH 已加载",
+    Content = "恶魔学脚本成功加载！",
+    Duration = 5,
+    Image = 1097885894,
+})
+------ YUki开源
